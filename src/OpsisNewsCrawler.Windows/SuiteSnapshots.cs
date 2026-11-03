@@ -1,0 +1,143 @@
+using OpsisNewsCrawler.Core;
+
+namespace OpsisNewsCrawler.Windows;
+
+/// <summary>Test switches: pictures of the welcome guide, the Opsis family window and the shrink animation, without anybody clicking.</summary>
+public static class SuiteSnapshots
+{
+    /// <summary><c>--snapshot-welcome &lt;folder&gt;</c>: one PNG per page.</summary>
+    public static void Welcome(string folder)
+    {
+        Directory.CreateDirectory(folder);
+        using var form = new WelcomeForm(MinimiseTarget.Tray) { StartPosition = FormStartPosition.Manual, Location = new Point(-4000, 0) };
+        form.Show();
+        Application.DoEvents();
+        for (var i = 0; i < WelcomeForm.PageCount; i++)
+        {
+            Thread.Sleep(120);
+            Application.DoEvents();
+            if (form.PageOverflows(i, out var detail)) File.AppendAllText(Path.Combine(folder, "overflow.txt"), detail + Environment.NewLine);
+            using var bmp = form.Snapshot(i);
+            bmp.Save(Path.Combine(folder, $"welcome{i + 1}.png"));
+        }
+        form.CloseNow();
+    }
+
+    /// <summary><c>--snapshot-suite &lt;png&gt; [dataDir]</c>: the family window after the installed state was read (no network except the catalogue/latest checks).</summary>
+    public static void Suite(string png, string dataDir)
+    {
+        Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(png))!);
+        using var form = new SuiteForm(dataDir, MinimiseTarget.Tray) { StartPosition = FormStartPosition.Manual, Location = new Point(-4000, 0) };
+        form.Show();
+        var task = form.RefreshAsync();
+        var until = DateTime.UtcNow.AddSeconds(12);
+        while (!task.IsCompleted && DateTime.UtcNow < until)
+        {
+            Application.DoEvents();
+            Thread.Sleep(30);
+        }
+        for (var i = 0; i < 12; i++) { Application.DoEvents(); Thread.Sleep(40); }
+        using var bmp = new Bitmap(form.Width, form.Height);
+        form.DrawToBitmap(bmp, new Rectangle(Point.Empty, bmp.Size));
+        bmp.Save(png);
+        form.CloseNow();
+    }
+
+    /// <summary><c>--snapshot-minimise &lt;png&gt;</c>: the shrink animation drawn at 0, 25, 50, 75 % over a grey desktop, from the real window picture.</summary>
+    public static void Minimise(string png)
+    {
+        using var form = new WelcomeForm(MinimiseTarget.Tray) { StartPosition = FormStartPosition.Manual, Location = new Point(-4000, 0) };
+        form.Show();
+        Application.DoEvents();
+        Thread.Sleep(150);
+        Application.DoEvents();
+        using var picture = new Bitmap(form.Width, form.Height);
+        form.DrawToBitmap(picture, new Rectangle(Point.Empty, picture.Size));
+        form.CloseNow();
+
+        const int w = 1400, h = 640;
+        using var sheet = new Bitmap(w, h);
+        using (var g = Graphics.FromImage(sheet))
+        {
+            g.Clear(Color.FromArgb(52, 60, 78));
+            g.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBicubic;
+            var from = new Rectangle(310, 60, picture.Width, picture.Height);
+            var target = new Rectangle(1240, 560, 24, 24);
+            using var line = new Pen(Color.FromArgb(120, 255, 255, 255), 1f) { DashStyle = System.Drawing.Drawing2D.DashStyle.Dot };
+            g.DrawRectangle(line, target);
+            foreach (var t in new[] { 0.0, 0.25, 0.5, 0.75 })
+            {
+                var (bounds, opacity) = MinimiseAnimation.At(from, target, t, simple: false);
+                using var attrs = new System.Drawing.Imaging.ImageAttributes();
+                attrs.SetColorMatrix(new System.Drawing.Imaging.ColorMatrix { Matrix33 = (float)opacity });
+                var r = Rectangle.Round(bounds);
+                g.DrawImage(picture, r, 0, 0, picture.Width, picture.Height, GraphicsUnit.Pixel, attrs);
+            }
+        }
+        sheet.Save(png);
+    }
+}
+
+/// <summary><c>--snapshot-live-icon &lt;png&gt;</c>: the wide icon with the weather and alert symbols in several live states.</summary>
+public static class LiveIconSnapshot
+{
+    public static void Save(string png)
+    {
+        var states = new[] { (1, 0), (0, 1), (5, 2), (7, 3), (12, 0), (3, 2) };
+        using var sheet = new Bitmap(1060, states.Length * 150);
+        using (var g = Graphics.FromImage(sheet))
+        {
+            g.Clear(Color.FromArgb(40, 44, 54));
+            for (var i = 0; i < states.Length; i++)
+            {
+                LiveIconState.Set(states[i].Item1, states[i].Item2, "");
+                using var icon = AppIconArt.RenderWide(1024, 128);
+                g.DrawImage(icon, 18, i * 150 + 10);
+            }
+        }
+        sheet.Save(png);
+        LiveIconState.Set(1, 0, "");
+    }
+}
+
+/// <summary><c>--snapshot-hazard-card &lt;png&gt;</c>: opens the detail card of a sample earthquake (live map, needs internet), saves a picture of it and closes it.</summary>
+public static class HazardCardSnapshot
+{
+    public static string Save(string png)
+    {
+        var t = DateTimeOffset.Now.AddHours(-3);
+        var quake = new HazardEvent("usgs:test", HazardKind.Earthquake, "Crete, Greece", 35.2, 25.0, t, "https://earthquake.usgs.gov/earthquakes/eventpage/test", 5.7, 5.5, 5.9, 2,
+            new[] { "USGS", "EMSC" }, 12, new Dictionary<string, string> { ["USGS"] = "https://earthquake.usgs.gov/earthquakes/eventpage/test", ["EMSC"] = "https://www.emsc-csem.org/Earthquake_information/earthquake.php?id=test" });
+        using var card = new HazardDetailForm(quake, new Rectangle(0, 900, 1600, 40)) { StartPosition = FormStartPosition.Manual };
+        card.Location = new Point(-3000, 0);
+        card.Show();
+        string? problem = null;
+        var task = card.SaveSnapshotAsync(png, 6000).ContinueWith(x => problem = x.IsFaulted ? x.Exception!.GetBaseException().Message : x.Result, TaskScheduler.FromCurrentSynchronizationContext());
+        while (!task.IsCompleted) { Application.DoEvents(); Thread.Sleep(50); }
+        card.Close();
+        return problem ?? "ok";
+    }
+}
+
+/// <summary>A picture of every disaster icon (8 kinds x 3 levels) and of the 7 continents, for a visual check (--snapshot-hazard-icons).</summary>
+public static class HazardIconSheet
+{
+    public static void Save(string png)
+    {
+        const int cell = 64, pad = 12;
+        var kinds = Enum.GetValues<HazardKind>();
+        var width = pad + (Math.Max(kinds.Length, Continents.Order.Count) * (cell + pad));
+        using var bmp = new Bitmap(width, pad + 4 * (cell + pad) + 40);
+        using var g = Graphics.FromImage(bmp);
+        g.Clear(Color.FromArgb(24, 24, 28));
+        for (var level = 1; level <= 3; level++)
+            for (var i = 0; i < kinds.Length; i++)
+                HazardIcons.Draw(g, new Rectangle(pad + i * (cell + pad), pad + (level - 1) * (cell + pad), cell, cell), kinds[i], level);
+        for (var i = 0; i < Continents.Order.Count; i++)
+            HazardIcons.DrawContinent(g, new Rectangle(pad + i * (cell + pad), pad + 3 * (cell + pad), cell, cell), Continents.Order[i]);
+        // the sizes the bar uses
+        for (var i = 0; i < kinds.Length; i++)
+            HazardIcons.Draw(g, new Rectangle(pad + i * (cell + pad), pad + 4 * (cell + pad), 22, 22), kinds[i], 2);
+        bmp.Save(png, System.Drawing.Imaging.ImageFormat.Png);
+    }
+}

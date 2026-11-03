@@ -229,4 +229,5 @@ Needs the .NET 10 SDK and Inno Setup 6/7. Layout: `src/OpsisNewsCrawler.Core` (m
 
 [MIT](LICENSE) © 2026 giorstergiopoulos-design
 #   R s s - F e e d - T a s k b a r  
+ #   R s s - F e e d - T a s k b a r  
  
